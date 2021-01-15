@@ -20,20 +20,20 @@ func TestDLockByZookeeper(t *testing.T) {
 	total := 0
 
 	var n sync.WaitGroup
-	for i := 0; i < 20; i++ {
+	for i := 0; i < 200; i++ {
 		n.Add(1)
 		go func(conn *zk.Conn, idx int) {
 			defer n.Done()
 
 			dl := NewDLockByZookeeper(conn)
 			if dl.TryLock(5) {
-				time.Sleep(time.Microsecond * 100)
+				total++
+				time.Sleep(time.Microsecond * 10)
 				dl.Unlock()
-				total += 1
 			}
 		}(conn, i)
 	}
 	n.Wait()
 
-	assert.Equal(t, 20, total)
+	assert.Equal(t, 200, total)
 }
