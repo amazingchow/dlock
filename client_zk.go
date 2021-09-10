@@ -9,6 +9,8 @@ import (
 )
 
 const (
+	_ZKConnSessionTimeout = time.Second * time.Duration(10)
+
 	_LockerRootPath                           = "/pddlocks"
 	_LockerLockPathFastLockUsed               = "/pddlocks/fast-lock"
 	_LockerLockPathFastLockUsedPrefix         = "/pddlocks/fast-lock/request-"
@@ -19,10 +21,25 @@ const (
 
 // EstablishZKConn 建立一条连接zookeeper集群的TCP连接.
 func EstablishZKConn(endpoints []string) (*zk.Conn, <-chan zk.Event) {
-	conn, evCh, err := zk.Connect(endpoints, time.Second*time.Duration(10))
+	conn, evCh, err := zk.Connect(endpoints, _ZKConnSessionTimeout)
 	if err != nil {
 		log.Fatal().Err(err).Msgf("failed to connect to zookeeper cluster (%v)", endpoints)
 	}
+
+WAIT:
+	for {
+		select {
+		case connEv := <-evCh:
+			if connEv.State == zk.StateConnected {
+				break WAIT
+			}
+		case <-time.After(_ZKConnSessionTimeout):
+			conn.Close()
+			log.Error().Err(err).Msgf("failed to connect to zookeeper cluster (%v), since session has timeout", endpoints)
+			return nil, nil
+		}
+	}
+
 	createIfNotExistOrDie(conn, _LockerRootPath)
 	createIfNotExistOrDie(conn, _LockerLockPathFastLockUsed)
 	return conn, evCh
