@@ -70,7 +70,7 @@ func EstablishRedisConn(cfg *RedisServiceConfig) *RedisConnPool {
 		},
 		TestOnBorrow: func(conn redis.Conn, t time.Time) error {
 			if !sentinel.TestRole(conn, "master") {
-				return errors.New("Role check failed")
+				return errors.New("role check failed")
 			} else {
 				return nil
 			}
