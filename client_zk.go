@@ -2,46 +2,53 @@ package pddlocks
 
 import (
 	"bytes"
+	"encoding/binary"
+	"math/rand"
 	"time"
 
-	"github.com/rs/zerolog/log"
-	"github.com/samuel/go-zookeeper/zk"
+	"github.com/go-zookeeper/zk"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
-	_ZKConnSessionTimeout = time.Second * time.Duration(10)
+	_DefaultZKConnSessionTimeout = time.Second * 10
+	_DefaultZKConnMaxRetries     = 3
 
-	_LockerRootPath                           = "/pddlocks"
-	_LockerLockPathFastLockUsed               = "/pddlocks/fast-lock"
-	_LockerLockPathFastLockUsedPrefix         = "/pddlocks/fast-lock/request-"
-	_LockerLockPathFastLockUsedShortestPrefix = "request-"
-
-	_MaxRetries = 3
+	_DlockRootPath                   = "/dlock"
+	_DlockFastLockPath               = "/dlock/fast-lock"
+	_DlockFastLockPathPrefix         = "/dlock/fast-lock/request-"
+	_DlockFastLockPathShortestPrefix = "request-"
 )
 
 // EstablishZKConn 建立一条连接zookeeper集群的TCP连接.
-func EstablishZKConn(endpoints []string) (*zk.Conn, <-chan zk.Event) {
-	conn, evCh, err := zk.Connect(endpoints, _ZKConnSessionTimeout)
+func EstablishZKConn(endpoints []string, timeout int64 /* in secs */) (*zk.Conn, <-chan zk.Event) {
+	rand.Seed(time.Now().UnixNano())
+
+	sessionTimeout := _DefaultZKConnSessionTimeout
+	if timeout > 0 {
+		sessionTimeout = time.Second * time.Duration(timeout)
+	}
+	conn, evCh, err := zk.Connect(endpoints, sessionTimeout)
 	if err != nil {
-		log.Fatal().Err(err).Msgf("failed to connect to zookeeper cluster (%v)", endpoints)
+		log.WithError(err).Fatalf("failed to connect to zookeeper cluster (%v)", endpoints)
 	}
 
-WAIT:
+WAIT_CONNECTED_LOOP:
 	for {
 		select {
 		case connEv := <-evCh:
 			if connEv.State == zk.StateConnected {
-				break WAIT
+				break WAIT_CONNECTED_LOOP
 			}
-		case <-time.After(_ZKConnSessionTimeout):
+		case <-time.After(_DefaultZKConnSessionTimeout):
 			conn.Close()
-			log.Error().Err(err).Msgf("failed to connect to zookeeper cluster (%v), since session has timeout", endpoints)
+			log.WithError(err).Errorf("timeout to connect to zookeeper cluster (%v)", endpoints)
 			return nil, nil
 		}
 	}
 
-	createIfNotExistOrDie(conn, _LockerRootPath)
-	createIfNotExistOrDie(conn, _LockerLockPathFastLockUsed)
+	zkCreateOrPanic(conn, _DlockRootPath)
+	zkCreateOrPanic(conn, _DlockFastLockPath)
 	return conn, evCh
 }
 
@@ -50,42 +57,41 @@ func CloseZKConn(conn *zk.Conn) {
 	conn.Close()
 }
 
-// 如果ZNode不存在就创建
-func createIfNotExist(conn *zk.Conn, path string) error {
-	if _, err := safeCreate(conn, path, []byte(""), 0); err != nil && err != zk.ErrNodeExists {
+// 如果ZNode不存在就创建.
+func zkCreate(conn *zk.Conn, path string) error {
+	if _, err := zkSafeCreateWithDefaultDataFilled(conn, path, 0); err != nil {
 		return err
 	}
 	return nil
 }
 
-// 如果ZNode不存在就创建, 出错直接panic
-func createIfNotExistOrDie(conn *zk.Conn, path string) {
-	if err := createIfNotExist(conn, path); err != nil {
-		log.Fatal().Err(err).Msgf("failed to create znode <%s>", path)
+// 如果ZNode不存在就创建, 出错直接panic.
+func zkCreateOrPanic(conn *zk.Conn, path string) {
+	if err := zkCreate(conn, path); err != nil && err != zk.ErrNodeExists {
+		log.WithError(err).Fatalf("failed to create znode <%s>", path)
 	}
 }
 
-// 创建ZNode
-func safeCreate(conn *zk.Conn, path string, data []byte, flags int32) (string, error) {
+// 创建ZNode.
+func zkSafeCreate(conn *zk.Conn, path string, data []byte, flags int32) (string, error) {
 	var _path string
-	var err error
 	var _data []byte
+	var err error
 
 	var retry bool
-
-LOOP:
-	for i := 0; i < _MaxRetries; i++ {
+CREATE_LOOP:
+	for i := 0; i < _DefaultZKConnMaxRetries; i++ {
 		_path, err = conn.Create(path, data, flags, zk.WorldACL(zk.PermAll))
 		switch err {
-		// No need to search for the node since it can't exist. Just try again.
 		case zk.ErrSessionExpired:
 			{
-				continue
+				break CREATE_LOOP
 			}
 		// 连接关闭, 可能因为暂时的网络问题, 直接重试
 		case zk.ErrConnectionClosed:
 			{
 				retry = true
+				time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(40)))
 				continue
 			}
 		// ZNode已存在
@@ -93,23 +99,25 @@ LOOP:
 			{
 				// 之前就创建过
 				if !retry {
-					return _path, zk.ErrNodeExists
+					err = zk.ErrNodeExists
+					break CREATE_LOOP
 				}
 				// 因为网络问题导致的假失败
-				_data, _, err = safeGet(conn, path)
+				_data, err = zkSafeGet(conn, path)
 				if err != nil {
 					// 又可能因为暂时的网络问题, 请重试
+					time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(40)))
 					continue
 				}
-				if bytes.Equal(data, _data) {
-					return _path, nil
+				if !bytes.Equal(data, _data) {
+					err = zk.ErrUnknown
 				}
-				return "", zk.ErrUnknown
+				break CREATE_LOOP
 			}
-		// TODO: 处理更多的错误情形
 		default:
 			{
-				break LOOP
+				// TODO: 处理更多的错误情形
+				break CREATE_LOOP
 			}
 		}
 	}
@@ -117,70 +125,125 @@ LOOP:
 	return _path, err
 }
 
-// 获取ZNode的值
-func safeGet(conn *zk.Conn, path string) ([]byte, *zk.Stat, error) {
+// 创建ZNode.
+func zkSafeCreateWithDefaultDataFilled(conn *zk.Conn, path string, flags int32) (string, error) {
+	var _path string
 	var _data []byte
-	var _stat *zk.Stat
 	var err error
 
-LOOP:
-	for i := 0; i < _MaxRetries; i++ {
-		_data, _stat, err = conn.Get(path)
+	var retry bool
+
+	data := make([]byte, 8)
+	binary.LittleEndian.PutUint64(data, uint64(time.Now().UnixMilli()))
+CREATE_LOOP:
+	for i := 0; i < _DefaultZKConnMaxRetries; i++ {
+		_path, err = conn.Create(path, data, flags, zk.WorldACL(zk.PermAll))
 		switch err {
-		// session过期直接panic
 		case zk.ErrSessionExpired:
 			{
-				log.Fatal().Err(zk.ErrSessionExpired).Msgf("failed to get value of znode <%s>", path)
+				break CREATE_LOOP
 			}
-		// 连接关闭, 可能因为暂时的网络问题, 请重试
+		// 连接关闭, 可能因为暂时的网络问题, 直接重试
 		case zk.ErrConnectionClosed:
 			{
+				retry = true
+				time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(40)))
 				continue
 			}
-		// TODO: 处理更多的错误情形
+		// ZNode已存在
+		case zk.ErrNodeExists:
+			{
+				// 之前就创建过
+				if !retry {
+					err = zk.ErrNodeExists
+					break CREATE_LOOP
+				}
+				// 因为网络问题导致的假失败
+				_data, err = zkSafeGet(conn, path)
+				if err != nil {
+					// 又可能因为暂时的网络问题, 请重试
+					time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(40)))
+					continue
+				}
+				if !bytes.Equal(data, _data) {
+					err = zk.ErrUnknown
+				}
+				break CREATE_LOOP
+			}
 		default:
 			{
-				break LOOP
+				// TODO: 处理更多的错误情形
+				break CREATE_LOOP
 			}
 		}
 	}
 
-	return _data, _stat, err
+	return _path, err
 }
 
-// 删除ZNode
-func safeDelete(conn *zk.Conn, path string, version int32) error {
+// 获取ZNode的值.
+func zkSafeGet(conn *zk.Conn, path string) ([]byte, error) {
+	var _data []byte
 	var err error
-	var retry bool
 
-LOOP:
-	for i := 0; i < _MaxRetries; i++ {
-		err = conn.Delete(path, version)
+GET_LOOP:
+	for i := 0; i < _DefaultZKConnMaxRetries; i++ {
+		_data, _, err = conn.Get(path)
 		switch err {
-		// session过期直接panic
 		case zk.ErrSessionExpired:
 			{
-				log.Fatal().Err(zk.ErrSessionExpired).Msgf("failed to delete znode <%s>", path)
+				break GET_LOOP
+			}
+		// 连接关闭, 可能因为暂时的网络问题, 请重试
+		case zk.ErrConnectionClosed:
+			{
+				time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(40)))
+				continue
+			}
+		default:
+			{
+				// TODO: 处理更多的错误情形
+				break GET_LOOP
+			}
+		}
+	}
+
+	return _data, err
+}
+
+// 删除ZNode.
+func zkSafeDelete(conn *zk.Conn, path string, version int32) error {
+	var err error
+
+	var retry bool
+DELETE_LOOP:
+	for i := 0; i < _DefaultZKConnMaxRetries; i++ {
+		err = conn.Delete(path, version)
+		switch err {
+		case zk.ErrSessionExpired:
+			{
+				break DELETE_LOOP
 			}
 		// 连接关闭, 可能因为暂时的网络问题, 请重试
 		case zk.ErrConnectionClosed:
 			{
 				retry = true
+				time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(40)))
 				continue
 			}
 		// ZNode不存在
 		case zk.ErrNoNode:
 			{
 				// 因为网络问题导致的假失败
-				if retry {
-					return nil
+				if !retry {
+					err = zk.ErrNoNode
 				}
-				return zk.ErrNoNode
+				break DELETE_LOOP
 			}
-		// TODO: 处理更多的错误情形
 		default:
 			{
-				break LOOP
+				// TODO: 处理更多的错误情形
+				break DELETE_LOOP
 			}
 		}
 	}
@@ -188,34 +251,34 @@ LOOP:
 	return err
 }
 
-// 获取ZNode所有的子节点
-func safeGetChildren(conn *zk.Conn, path string, watch bool) ([]string, <-chan zk.Event, error) {
+// 获取ZNode下所有的子节点.
+func zkSafeGetChildren(conn *zk.Conn, path string, watch bool) ([]string, <-chan zk.Event, error) {
 	var _children []string
 	var _watcher <-chan zk.Event
 	var err error
 
-LOOP:
-	for i := 0; i < _MaxRetries; i++ {
+GET_LOOP:
+	for i := 0; i < _DefaultZKConnMaxRetries; i++ {
 		if watch {
 			_children, _, _watcher, err = conn.ChildrenW(path)
 		} else {
 			_children, _, err = conn.Children(path)
 		}
 		switch err {
-		// session过期直接panic
 		case zk.ErrSessionExpired:
 			{
-				log.Fatal().Err(zk.ErrSessionExpired).Msgf("failed to list children of znode <%s>", path)
+				break GET_LOOP
 			}
 		// 连接关闭, 可能因为暂时的网络问题, 请重试
 		case zk.ErrConnectionClosed:
 			{
+				time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(40)))
 				continue
 			}
-		// TODO: 处理更多的错误情形
 		default:
 			{
-				break LOOP
+				// TODO: 处理更多的错误情形
+				break GET_LOOP
 			}
 		}
 	}

@@ -1,12 +1,10 @@
 package pddlocks
 
 import (
-	"os"
 	"time"
 
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
 	uuid "github.com/satori/go.uuid"
+	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -24,15 +22,13 @@ else
 end`
 )
 
-// DLockByRedis 通过redis实现的分布式锁
+// DLockByRedis 通过redis实现的分布式锁服务
 type DLockByRedis struct {
 	p *RedisConnPool
 }
 
 // NewDLockByRedis 获取DLockByRedis实例.
 func NewDLockByRedis(p *RedisConnPool) *DLockByRedis {
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).With().Caller().Logger()
-
 	return &DLockByRedis{
 		p: p,
 	}
@@ -47,7 +43,7 @@ func (dlr *DLockByRedis) TryLock(timeoutInSecs int64) (string, bool) {
 		// TODO: 设置为多少比较合理?
 		v, err := dlr.p.ExecCommand("SET", _DistributedLock, id, "NX", "EX", 3600)
 		if err != nil {
-			log.Error().Err(err).Msg("failed to acquire lock")
+			log.WithError(err).Error("failed to acquire lock")
 			return "", false
 		}
 		if v == nil {
@@ -66,9 +62,9 @@ func (dlr *DLockByRedis) TryLock(timeoutInSecs int64) (string, bool) {
 func (dlr *DLockByRedis) Unlock(value string) {
 	v, err := dlr.p.ExecLuaScript(_CheckAndDel, 1, _DistributedLock, value)
 	if err != nil {
-		log.Error().Err(err).Msg("failed to release lock")
+		log.WithError(err).Error("failed to release lock")
 	}
 	if v == nil || v.(int64) != 1 {
-		log.Error().Err(err).Msg("failed to release lock")
+		log.WithError(err).Error("failed to release lock")
 	}
 }

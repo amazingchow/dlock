@@ -6,7 +6,7 @@ import (
 
 	"github.com/FZambia/sentinel"
 	"github.com/gomodule/redigo/redis"
-	"github.com/rs/zerolog/log"
+	log "github.com/sirupsen/logrus"
 )
 
 type RedisConnPool struct {
@@ -40,7 +40,7 @@ func EstablishRedisConn(cfg *RedisServiceConfig) *RedisConnPool {
 				redis.DialPassword(cfg.SentinelPassword),
 			)
 			if err != nil {
-				log.Fatal().Err(err).Msg("failed to connect to redis server")
+				log.WithError(err).Fatal("failed to connect to redis server")
 				return nil, err
 			}
 			return conn, nil
@@ -52,7 +52,7 @@ func EstablishRedisConn(cfg *RedisServiceConfig) *RedisConnPool {
 		Dial: func() (redis.Conn, error) {
 			master, err := sntnl.MasterAddr()
 			if err != nil {
-				log.Fatal().Err(err).Msg("failed to connect to redis server")
+				log.WithError(err).Fatal("failed to connect to redis server")
 				return nil, err
 			}
 			conn, err := redis.Dial(
@@ -63,7 +63,7 @@ func EstablishRedisConn(cfg *RedisServiceConfig) *RedisConnPool {
 				redis.DialPassword(cfg.RedisMasterPassword),
 			)
 			if err != nil {
-				log.Fatal().Err(err).Msg("failed to connect to redis server")
+				log.WithError(err).Fatal("failed to connect to redis server")
 				return nil, err
 			}
 			return conn, nil

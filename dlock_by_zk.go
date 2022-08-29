@@ -1,26 +1,22 @@
 package pddlocks
 
 import (
-	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/rs/zerolog"
-	"github.com/rs/zerolog/log"
-	"github.com/samuel/go-zookeeper/zk"
+	"github.com/go-zookeeper/zk"
+	log "github.com/sirupsen/logrus"
 )
 
-// DLockByZookeeper 通过zookeeper实现的分布式锁
+// DLockByZookeeper 通过zookeeper实现的分布式锁服务
 type DLockByZookeeper struct {
-	conn     *zk.Conn
-	lockpath string
+	conn  *zk.Conn
+	lpath string
 }
 
 // NewDLockByZookeeper 获取DLockByZookeeper实例.
 func NewDLockByZookeeper(conn *zk.Conn) *DLockByZookeeper {
-	log.Logger = log.Output(zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: time.RFC3339}).With().Caller().Logger()
-
 	return &DLockByZookeeper{
 		conn: conn,
 	}
@@ -30,75 +26,71 @@ func NewDLockByZookeeper(conn *zk.Conn) *DLockByZookeeper {
 /*
 
 ==> acquire lock
-n = create("/pddlocks/fast-lock/request-", "", ephemeral|sequence)
+n = create("/dlock/fast-lock/request-", "", ephemeral|sequence)
 RETRY:
-    children = getChildren("/pddlocks/fast-lock", watch=False)
+    children = getChildren("/dlock/fast-lock", watch=False)
     if n is lowest znode in children:
         return
     else:
-        exist("/pddlocks/fast-lock/request-" % (n - 1), watch=True)
+        exist("/dlock/fast-lock/request-" % (n - 1), watch=True)
 
 watch_event:
 	goto RETRY
 
 */
-func (dlz *DLockByZookeeper) TryLock(timeoutInSecs int) bool {
-	if dlz.lockpath != "" {
-		log.Error().Err(ErrDeadlock).Msg("failed to acquire lock")
-		return false
-	}
-
-	path, err := safeCreate(dlz.conn, _LockerLockPathFastLockUsedPrefix, []byte(""), zk.FlagEphemeral|zk.FlagSequence)
+func (dlz *DLockByZookeeper) TryLock(pid string, timeout int64 /* in secs */) bool {
+	path, err := zkSafeCreateWithDefaultDataFilled(dlz.conn, _DlockFastLockPathPrefix, zk.FlagEphemeral|zk.FlagSequence)
 	if err != nil {
-		log.Error().Err(err).Msg("failed to acquire lock")
+		log.WithField("pid", pid).WithError(err).Error("failed to acquire lock")
 		return false
 	}
-	seq := dlz.getSequenceNum(path, _LockerLockPathFastLockUsedPrefix)
+	seq := dlz.getSequenceNum(path, _DlockFastLockPathPrefix)
 
-	ticker := time.NewTicker(time.Duration(timeoutInSecs) * time.Second)
+	ticker1 := time.NewTicker(time.Duration(timeout) * time.Second)
+	defer ticker1.Stop()
+	ticker2 := time.NewTicker(time.Duration(200) * time.Millisecond)
+	defer ticker2.Stop()
 LOOP:
 	for {
 		select {
-		case <-ticker.C:
+		case <-ticker1.C:
 			{
-				log.Warn().Msg("failed to acquire lock, since timeout to retry")
+				log.WithField("pid", pid).Warn("timeout to acquire lock")
 				return false
 			}
 		default:
 			{
 			TRY_AGAIN:
-				children, _, err := safeGetChildren(dlz.conn, _LockerLockPathFastLockUsed, false)
+				children, _, err := zkSafeGetChildren(dlz.conn, _DlockFastLockPath, false)
 				if err != nil {
-					log.Error().Err(err).Msg("failed to acquire lock")
+					log.WithField("pid", pid).WithError(err).Error("failed to acquire lock")
 					return false
 				}
 
 				minSeq := seq
 				prevSeq := -1
 				prevSeqPath := ""
-
 				for _, child := range children {
-					s := dlz.getSequenceNum(child, _LockerLockPathFastLockUsedShortestPrefix)
-					if s < minSeq {
-						minSeq = s
+					_seq := dlz.getSequenceNum(child, _DlockFastLockPathShortestPrefix)
+					if _seq < minSeq {
+						minSeq = _seq
 					}
-					if s < seq && s > prevSeq {
-						prevSeq = s
+					if _seq < seq && _seq > prevSeq {
+						prevSeq = _seq
 						prevSeqPath = child
 					}
 				}
-
 				if seq == minSeq {
 					break LOOP
 				}
 
-				_, _, watcher, err := dlz.conn.ExistsW(_LockerLockPathFastLockUsed + "/" + prevSeqPath)
+				_, _, watcher, err := dlz.conn.ExistsW(_DlockFastLockPath + "/" + prevSeqPath)
 				if err != nil {
-					log.Error().Err(err).Msg("failed to acquire lock")
+					log.WithField("pid", pid).WithError(err).Error("failed to acquire lock")
 					return false
 				}
 
-				smallTicker := time.NewTicker(time.Duration(timeoutInSecs/3) * time.Second)
+				ticker2.Reset(time.Duration(200) * time.Millisecond)
 				for {
 					select {
 					case ev, ok := <-watcher:
@@ -110,7 +102,7 @@ LOOP:
 								goto TRY_AGAIN
 							}
 						}
-					case <-smallTicker.C:
+					case <-ticker2.C:
 						{
 							goto TRY_AGAIN
 						}
@@ -120,7 +112,7 @@ LOOP:
 		}
 	}
 
-	dlz.lockpath = path
+	dlz.lpath = path
 	return true
 }
 
@@ -128,14 +120,14 @@ LOOP:
 /*
 
 ==> release lock (voluntarily or session timeout)
-delete("/pddlocks/fast-lock/request-" % n)
+delete("/dlock/fast-lock/request-" % n)
 
 */
-func (dlz *DLockByZookeeper) Unlock() {
-	if err := safeDelete(dlz.conn, dlz.lockpath, -1); err != nil {
-		log.Error().Err(err).Msg("failed to release lock")
+func (dlz *DLockByZookeeper) Unlock(pid string) {
+	if err := zkSafeDelete(dlz.conn, dlz.lpath, -1); err != nil {
+		log.WithField("pid", pid).WithError(err).Error("failed to release lock")
 	}
-	dlz.lockpath = ""
+	dlz.lpath = ""
 }
 
 func (dlz *DLockByZookeeper) getSequenceNum(path, prefix string) int {
