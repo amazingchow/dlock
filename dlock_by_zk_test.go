@@ -1,4 +1,4 @@
-package pddlocks
+package dlock
 
 import (
 	"fmt"
@@ -16,7 +16,7 @@ var (
 	fakeZKEndpoints = []string{"127.0.0.1:2181", "127.0.0.1:2182", "127.0.0.1:2183"}
 )
 
-func TestDLockByZookeeper(t *testing.T) {
+func TestDlockByZookeeper(t *testing.T) {
 	SkipAutoTest(t)
 
 	rand.Seed(time.Now().UnixNano())
@@ -34,10 +34,15 @@ func TestDLockByZookeeper(t *testing.T) {
 
 			pid := fmt.Sprintf("%d", goid.Get())
 
-			dl := NewDLockByZookeeper(conn)
-			if dl.TryLock(pid, 2) {
-				defer dl.Unlock(pid)
-				total++
+			dl := NewDlockByZookeeper(conn)
+			for {
+				token, acquired := dl.TryLock(pid, 2)
+				if acquired {
+					defer dl.Unlock(pid, token)
+					total++
+					time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(10)))
+					break
+				}
 				time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(10)))
 			}
 		}(conn)

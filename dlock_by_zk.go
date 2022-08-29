@@ -1,4 +1,4 @@
-package pddlocks
+package dlock
 
 import (
 	"strconv"
@@ -9,15 +9,14 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-// DLockByZookeeper 通过zookeeper实现的分布式锁服务
-type DLockByZookeeper struct {
-	conn  *zk.Conn
-	lpath string
+// DlockByZookeeper 通过zookeeper实现的分布式锁服务
+type DlockByZookeeper struct {
+	conn *zk.Conn
 }
 
-// NewDLockByZookeeper 获取DLockByZookeeper实例.
-func NewDLockByZookeeper(conn *zk.Conn) *DLockByZookeeper {
-	return &DLockByZookeeper{
+// NewDlockByZookeeper 获取DlockByZookeeper实例.
+func NewDlockByZookeeper(conn *zk.Conn) *DlockByZookeeper {
+	return &DlockByZookeeper{
 		conn: conn,
 	}
 }
@@ -38,11 +37,12 @@ watch_event:
 	goto RETRY
 
 */
-func (dlz *DLockByZookeeper) TryLock(pid string, timeout int64 /* in secs */) bool {
+func (dlz *DlockByZookeeper) TryLock(pid string, timeout int64 /* in secs */) (token string, acquired bool) {
 	path, err := zkSafeCreateWithDefaultDataFilled(dlz.conn, _DlockFastLockPathPrefix, zk.FlagEphemeral|zk.FlagSequence)
 	if err != nil {
 		log.WithField("pid", pid).WithError(err).Error("failed to acquire lock")
-		return false
+		acquired = false
+		return
 	}
 	seq := dlz.getSequenceNum(path, _DlockFastLockPathPrefix)
 
@@ -56,7 +56,8 @@ LOOP:
 		case <-ticker1.C:
 			{
 				log.WithField("pid", pid).Warn("timeout to acquire lock")
-				return false
+				acquired = false
+				return
 			}
 		default:
 			{
@@ -64,7 +65,8 @@ LOOP:
 				children, _, err := zkSafeGetChildren(dlz.conn, _DlockFastLockPath, false)
 				if err != nil {
 					log.WithField("pid", pid).WithError(err).Error("failed to acquire lock")
-					return false
+					acquired = false
+					return
 				}
 
 				minSeq := seq
@@ -87,7 +89,8 @@ LOOP:
 				_, _, watcher, err := dlz.conn.ExistsW(_DlockFastLockPath + "/" + prevSeqPath)
 				if err != nil {
 					log.WithField("pid", pid).WithError(err).Error("failed to acquire lock")
-					return false
+					acquired = false
+					return
 				}
 
 				ticker2.Reset(time.Duration(200) * time.Millisecond)
@@ -96,7 +99,8 @@ LOOP:
 					case ev, ok := <-watcher:
 						{
 							if !ok {
-								return false
+								acquired = false
+								return
 							}
 							if ev.Type == zk.EventNodeDeleted {
 								goto TRY_AGAIN
@@ -112,8 +116,9 @@ LOOP:
 		}
 	}
 
-	dlz.lpath = path
-	return true
+	token = path
+	acquired = true
+	return
 }
 
 // Unlock 释放分布式锁.
@@ -123,14 +128,13 @@ LOOP:
 delete("/dlock/fast-lock/request-" % n)
 
 */
-func (dlz *DLockByZookeeper) Unlock(pid string) {
-	if err := zkSafeDelete(dlz.conn, dlz.lpath, -1); err != nil {
+func (dlz *DlockByZookeeper) Unlock(pid, token string) {
+	if err := zkSafeDelete(dlz.conn, token, -1); err != nil {
 		log.WithField("pid", pid).WithError(err).Error("failed to release lock")
 	}
-	dlz.lpath = ""
 }
 
-func (dlz *DLockByZookeeper) getSequenceNum(path, prefix string) int {
+func (dlz *DlockByZookeeper) getSequenceNum(path, prefix string) int {
 	numStr := strings.TrimPrefix(path, prefix)
 	num, _ := strconv.Atoi(numStr)
 	return num

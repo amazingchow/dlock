@@ -1,4 +1,4 @@
-package pddlocks
+package dlock
 
 import (
 	"os"
