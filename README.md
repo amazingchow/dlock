@@ -1,4 +1,4 @@
-# photon-dance-distributed-locks-service
+# dlock
 
 ## Usage
 
@@ -16,7 +16,7 @@
 
 ### Step 3
 
-* 🔃 Create a new PR using https://github.com/amazingchow/photon-dance-distributed-locks-service/compare!
+* 🔃 Create a new PR using https://github.com/amazingchow/dlock/compare!
 
 ## Support
 

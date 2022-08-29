@@ -1,4 +1,4 @@
-module github.com/amazingchow/photon-dance-distributed-locks-service
+module github.com/amazingchow/dlock
 
 go 1.15
 
