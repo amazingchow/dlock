@@ -78,7 +78,7 @@ Server node which performs automatic recovery if any of the connected node faile
 
 Server node which follows leader instruction.
 
-![Architecture](Architecture.png)
+![architecture](imgs/architecture.png)
 
 ### Hierarchical Namespace
 
@@ -92,7 +92,7 @@ The config namespace is used for centralized configuration management and the wo
 
 Under config namespace, each znode can store up to 1MB of data. This is similar to Unix file system except that the parent znode can store data as well. The main purpose of this structure is to store synchronized data and describe the metadata of the znode. This structure is called as ``ZooKeeper Data Model``.
 
-![Hierarchical Namespace](HierarchicalNamespace.png)
+![hierarchical_namespace](imgs/hierarchical_namespace.png)
 
 Every znode in the ZooKeeper Data Model maintains a stat structure. A stat simply provides the metadata of a znode. It consists of ``Version number``, ``Action control list (ACL)``, ``Timestamp``, and ``Data length``.
 
@@ -174,7 +174,7 @@ Let's analyze the effect of having different number of nodes in the ZooKeeper en
 
 We know that a ``write process`` is expensive than a ``read process`` in ZooKeeper ensemble, since all the nodes need to write the same data in its database. So, it is better to have less number of nodes (3, 5 or 7) than having a large number of nodes for a balanced environment.
 
-![Full Architecture](FullArchitecture.png)
+![full_architecture](imgs/full_architecture.png)
 
 * Read
 
