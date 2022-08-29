@@ -1,48 +1,59 @@
-package pddlocks
+package dlock
 
 import (
+	"fmt"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/petermattis/goid"
 	"github.com/stretchr/testify/assert"
 )
 
 var (
-	fakeRedisServiceCfg = &RedisServiceConfig{
-		SentinelEndpoints:       []string{"localhost:26379", "localhost:26380", "localhost:26381"},
-		SentinelMasterName:      "mymaster",
-		SentinelPassword:        "Pwd123!@",
-		RedisMasterPassword:     "sOmE_sEcUrE_pAsS",
-		RedisPoolMaxIdleConns:   3,
-		RedisPoolMaxActiveConns: 64,
-		RedisConnectTimeoutMsec: 500,
-		RedisReadTimeoutMsec:    500,
-		RedisWriteTimeoutMsec:   500,
+	fakeRedisConnPoolConfig = &RedisConnPoolConfig{
+		RedisEndpoint:       "127.0.0.1:6379",
+		RedisDatabase:       0,
+		RedisPassword:       "sOmE_sEcUrE_pAsS",
+		RedisConnectTimeout: 2000,
+		RedisReadTimeout:    1000,
+		RedisWriteTimeout:   1000,
 	}
 )
 
-func TestDLockByRedis(t *testing.T) {
-	p := EstablishRedisConn(fakeRedisServiceCfg)
-	defer CloseRedisConn(p)
+func TestDlockByRedis(t *testing.T) {
+	SkipAutoTest(t)
+
+	rand.Seed(time.Now().UnixNano())
+
+	conn := EstablishRedisConn(fakeRedisConnPoolConfig)
+	defer conn.Close()
 
 	total := 0
 
-	var n sync.WaitGroup
-	for i := 0; i < 200; i++ {
-		n.Add(1)
-		go func(p *RedisConnPool, idx int) {
-			defer n.Done()
+	wg := &sync.WaitGroup{}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(conn *RedisConnPool) {
+			defer wg.Done()
 
-			dl := NewDLockByRedis(p)
-			if v, ok := dl.TryLock(5); ok && v != "" {
-				total++
-				time.Sleep(time.Microsecond * 10)
-				dl.Unlock(v)
+			pid := fmt.Sprintf("%d", goid.Get())
+
+			dl := NewDlockByRedis(conn)
+			for {
+				token, acquired := dl.TryLock(pid, 2)
+				if acquired {
+					defer dl.Unlock(pid, token)
+					total++
+					time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(10)))
+					break
+				}
+				time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(10)))
 			}
-		}(p, i)
+		}(conn)
 	}
-	n.Wait()
+	wg.Wait()
 
-	assert.Equal(t, 200, total)
+	assert.Equal(t, 20, total)
 }

@@ -1,1 +1,0 @@
-refer to [photon-dance-docker-compose](https://github.com/amazingchow/photon-dance-docker-compose) to setup zookeeper/redis/etcd.

@@ -1,11 +1,14 @@
-package pddlocks
+package dlock
 
 import (
+	"fmt"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/samuel/go-zookeeper/zk"
+	"github.com/go-zookeeper/zk"
+	"github.com/petermattis/goid"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -13,27 +16,38 @@ var (
 	fakeZKEndpoints = []string{"127.0.0.1:2181", "127.0.0.1:2182", "127.0.0.1:2183"}
 )
 
-func TestDLockByZookeeper(t *testing.T) {
-	conn, _ := EstablishZKConn(fakeZKEndpoints)
+func TestDlockByZookeeper(t *testing.T) {
+	SkipAutoTest(t)
+
+	rand.Seed(time.Now().UnixNano())
+
+	conn, _ := EstablishZKConn(fakeZKEndpoints, 0)
 	defer CloseZKConn(conn)
 
 	total := 0
 
-	var n sync.WaitGroup
-	for i := 0; i < 200; i++ {
-		n.Add(1)
-		go func(conn *zk.Conn, idx int) {
-			defer n.Done()
+	wg := &sync.WaitGroup{}
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(conn *zk.Conn) {
+			defer wg.Done()
 
-			dl := NewDLockByZookeeper(conn)
-			if dl.TryLock(5) {
-				total++
-				time.Sleep(time.Microsecond * 10)
-				dl.Unlock()
+			pid := fmt.Sprintf("%d", goid.Get())
+
+			dl := NewDlockByZookeeper(conn)
+			for {
+				token, acquired := dl.TryLock(pid, 2)
+				if acquired {
+					defer dl.Unlock(pid, token)
+					total++
+					time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(10)))
+					break
+				}
+				time.Sleep(time.Millisecond * time.Duration(10+rand.Intn(10)))
 			}
-		}(conn, i)
+		}(conn)
 	}
-	n.Wait()
+	wg.Wait()
 
-	assert.Equal(t, 200, total)
+	assert.Equal(t, 20, total)
 }

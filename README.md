@@ -1,8 +1,8 @@
-# photon-dance-distributed-locks-service
+# dlock
 
 ## Usage
 
-``distributed locking service`` can make sure that only one work unit (process| service | machine | ...) has access to the lock, which provides synchronization semantic for distributed application. 
+``dlock`` is used to coordinate the activities of multiple threads or processes or services, by controlling access to a shared resource by locking and unlocking the resource, which provides synchronization semantic for distributed application.
 
 ## Contributing
 
@@ -16,7 +16,7 @@
 
 ### Step 3
 
-* 🔃 Create a new PR using https://github.com/amazingchow/photon-dance-distributed-locks-service/compare!
+* 🔃 Create a new PR using https://github.com/amazingchow/dlock/compare!
 
 ## Support
 
