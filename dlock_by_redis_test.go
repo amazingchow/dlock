@@ -42,7 +42,7 @@ func TestDlockByRedis(t *testing.T) {
 
 			dl := NewDlockByRedis(conn)
 			for {
-				token, acquired := dl.TryLock(pid, 2)
+				token, acquired := dl.TryLock(pid, 30000, 2)
 				if acquired {
 					defer dl.Unlock(pid, token)
 					total++
